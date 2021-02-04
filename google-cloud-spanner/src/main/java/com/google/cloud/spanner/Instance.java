@@ -46,7 +46,6 @@ public class Instance extends InstanceInfo {
       super(id);
       this.instanceClient = instanceClient;
       this.dbClient = dbClient;
-      // this.infoBuilder = new InstanceInfo.BuilderImpl(id);
     }
 
     @Override
