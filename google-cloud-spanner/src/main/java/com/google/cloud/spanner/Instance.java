@@ -35,60 +35,53 @@ public class Instance extends InstanceInfo {
   public static class Builder extends InstanceInfo.Builder {
     private final InstanceAdminClient instanceClient;
     private final DatabaseAdminClient dbClient;
-    private final InstanceInfo.BuilderImpl infoBuilder;
 
     Builder(Instance instance) {
+      super(instance);
       this.instanceClient = instance.instanceClient;
       this.dbClient = instance.dbClient;
-      this.infoBuilder = new InstanceInfo.BuilderImpl(instance);
     }
 
     Builder(InstanceAdminClient instanceClient, DatabaseAdminClient dbClient, InstanceId id) {
+      super(id);
       this.instanceClient = instanceClient;
       this.dbClient = dbClient;
-      this.infoBuilder = new InstanceInfo.BuilderImpl(id);
+      // this.infoBuilder = new InstanceInfo.BuilderImpl(id);
     }
 
     @Override
     public Builder setInstanceConfigId(InstanceConfigId instanceConfigId) {
-      infoBuilder.setInstanceConfigId(instanceConfigId);
-      return this;
+      return (Builder) super.setInstanceConfigId(instanceConfigId);
     }
 
     @Override
     public Builder setDisplayName(String displayName) {
-      infoBuilder.setDisplayName(displayName);
-      return this;
+      return (Builder) super.setDisplayName(displayName);
     }
 
     @Override
     public Builder setNodeCount(int nodeCount) {
-      infoBuilder.setNodeCount(nodeCount);
-      return this;
+      return (Builder) super.setNodeCount(nodeCount);
     }
 
     @Override
     public Builder setProcessingUnits(int processingUnits) {
-      infoBuilder.setProcessingUnits(processingUnits);
-      return this;
+      return (Builder) super.setProcessingUnits(processingUnits);
     }
 
     @Override
     public Builder setState(State state) {
-      infoBuilder.setState(state);
-      return this;
+      return (Builder) super.setState(state);
     }
 
     @Override
     public Builder addLabel(String key, String value) {
-      infoBuilder.addLabel(key, value);
-      return this;
+      return (Builder) super.addLabel(key, value);
     }
 
     @Override
     public Builder putAllLabels(Map<String, String> labels) {
-      infoBuilder.putAllLabels(labels);
-      return this;
+      return (Builder) super.putAllLabels(labels);
     }
 
     @Override
@@ -101,7 +94,7 @@ public class Instance extends InstanceInfo {
   private final DatabaseAdminClient dbClient;
 
   Instance(Builder builder) {
-    super(builder.infoBuilder);
+    super(builder);
     this.instanceClient = builder.instanceClient;
     this.dbClient = builder.dbClient;
   }

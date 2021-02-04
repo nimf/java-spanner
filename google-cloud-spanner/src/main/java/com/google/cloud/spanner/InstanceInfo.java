@@ -72,101 +72,66 @@ public class InstanceInfo {
   }
 
   /** Builder for {@code InstanceInfo}. */
-  public abstract static class Builder {
-    public abstract Builder setInstanceConfigId(InstanceConfigId configId);
-
-    public abstract Builder setDisplayName(String displayName);
-
-    /**
-     * Sets the number of nodes for the instance. Only one of processing units or node count must be
-     * set when creating a new instance.
-     */
-    public abstract Builder setNodeCount(int nodeCount);
-
-    /**
-     * Sets the number of processing units for the instance. Only one of processing units or node
-     * count must be set when creating a new instance. Processing units must be between 1 and 999
-     * (inclusive) when creating a new instance with node count = 0. Processing units from 1000 and
-     * up must always be a multiple of 1000 (i.e. equal to an integer number of nodes).
-     */
-    public abstract Builder setProcessingUnits(int processingUnits);
-
-    public abstract Builder setState(State state);
-
-    public abstract Builder addLabel(String key, String value);
-
-    public abstract Builder putAllLabels(Map<String, String> labels);
-
-    public abstract InstanceInfo build();
-  }
-
-  static class BuilderImpl extends Builder {
+  public static class Builder {
     private InstanceId id;
     private InstanceConfigId configId;
     private String displayName;
     private int nodeCount;
     private int processingUnits;
     private State state;
-    private Map<String, String> labels;
+    private Map<String, String> labels = new HashMap<>();
 
-    BuilderImpl(InstanceId id) {
+    public Builder() {}
+
+    Builder(InstanceId id) {
       this.id = id;
-      this.labels = new HashMap<>();
     }
 
-    BuilderImpl(InstanceInfo instance) {
+    Builder(InstanceInfo instance) {
       this.id = instance.id;
       this.configId = instance.configId;
       this.displayName = instance.displayName;
       this.nodeCount = instance.nodeCount;
       this.processingUnits = instance.processingUnits;
       this.state = instance.state;
-      this.labels = new HashMap<>(instance.labels);
+      this.labels.putAll(instance.labels);
     }
 
-    @Override
-    public BuilderImpl setInstanceConfigId(InstanceConfigId configId) {
+    public Builder setInstanceConfigId(InstanceConfigId configId) {
       this.configId = configId;
       return this;
     }
 
-    @Override
-    public BuilderImpl setDisplayName(String displayName) {
+    public Builder setDisplayName(String displayName) {
       this.displayName = displayName;
       return this;
     }
 
-    @Override
-    public BuilderImpl setNodeCount(int nodeCount) {
+    public Builder setNodeCount(int nodeCount) {
       this.nodeCount = nodeCount;
       return this;
     }
 
-    @Override
-    public BuilderImpl setProcessingUnits(int processingUnits) {
+    public Builder setProcessingUnits(int processingUnits) {
       this.processingUnits = processingUnits;
       return this;
     }
 
-    @Override
-    public BuilderImpl setState(State state) {
+    public Builder setState(State state) {
       this.state = state;
       return this;
     }
 
-    @Override
-    public BuilderImpl addLabel(String key, String value) {
+    public Builder addLabel(String key, String value) {
       labels.put(key, value);
       return this;
     }
 
-    @Override
-    public BuilderImpl putAllLabels(Map<String, String> labels) {
+    public Builder putAllLabels(Map<String, String> labels) {
       this.labels.putAll(labels);
       return this;
     }
 
-    @Override
     public InstanceInfo build() {
       return new InstanceInfo(this);
     }
@@ -180,7 +145,7 @@ public class InstanceInfo {
   private final State state;
   private final ImmutableMap<String, String> labels;
 
-  InstanceInfo(BuilderImpl builder) {
+  InstanceInfo(Builder builder) {
     this.id = builder.id;
     this.configId = builder.configId;
     this.displayName = builder.displayName;
@@ -226,7 +191,7 @@ public class InstanceInfo {
   }
 
   public Builder toBuilder() {
-    return new BuilderImpl(this);
+    return new Builder(this);
   }
 
   @Override
@@ -282,6 +247,6 @@ public class InstanceInfo {
   }
 
   public static Builder newBuilder(InstanceId id) {
-    return new BuilderImpl(checkNotNull(id));
+    return new Builder(checkNotNull(id));
   }
 }

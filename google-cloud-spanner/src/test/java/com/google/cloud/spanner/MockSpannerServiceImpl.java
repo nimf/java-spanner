@@ -552,6 +552,7 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
   private ConcurrentMap<ByteString, Boolean> abortedTransactions = new ConcurrentHashMap<>();
   private final AtomicBoolean abortNextTransaction = new AtomicBoolean();
   private final AtomicBoolean abortNextStatement = new AtomicBoolean();
+  private final AtomicBoolean ignoreNextInlineBeginRequest = new AtomicBoolean();
   private ConcurrentMap<String, AtomicLong> transactionCounters = new ConcurrentHashMap<>();
   private ConcurrentMap<String, List<ByteString>> partitionTokens = new ConcurrentHashMap<>();
   private ConcurrentMap<ByteString, Instant> transactionLastUsed = new ConcurrentHashMap<>();
@@ -711,6 +712,10 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
     for (ByteString id : transactions.keySet()) {
       markAbortedTransaction(id);
     }
+  }
+
+  public void ignoreNextInlineBeginRequest() {
+    ignoreNextInlineBeginRequest.set(true);
   }
 
   public void freeze() {
@@ -973,7 +978,10 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
                             .build())
                     .setMetadata(
                         ResultSetMetadata.newBuilder()
-                            .setTransaction(Transaction.newBuilder().setId(transactionId).build())
+                            .setTransaction(
+                                ignoreNextInlineBeginRequest.getAndSet(false)
+                                    ? Transaction.getDefaultInstance()
+                                    : Transaction.newBuilder().setId(transactionId).build())
                             .build())
                     .build());
           }
@@ -999,7 +1007,10 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
       metadata =
           metadata
               .toBuilder()
-              .setTransaction(Transaction.newBuilder().setId(transactionId).build())
+              .setTransaction(
+                  ignoreNextInlineBeginRequest.getAndSet(false)
+                      ? Transaction.getDefaultInstance()
+                      : Transaction.newBuilder().setId(transactionId).build())
               .build();
     } else if (transactionSelector.hasBegin() || transactionSelector.hasSingleUse()) {
       Transaction transaction = getTemporaryTransactionOrNull(transactionSelector);
@@ -1085,7 +1096,10 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
                     ResultSetStats.newBuilder().setRowCountExact(res.getUpdateCount()).build())
                 .setMetadata(
                     ResultSetMetadata.newBuilder()
-                        .setTransaction(Transaction.newBuilder().setId(transactionId).build())
+                        .setTransaction(
+                            ignoreNextInlineBeginRequest.getAndSet(false)
+                                ? Transaction.getDefaultInstance()
+                                : Transaction.newBuilder().setId(transactionId).build())
                         .build())
                 .build());
       }
@@ -1508,7 +1522,10 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
       metadata =
           metadata
               .toBuilder()
-              .setTransaction(Transaction.newBuilder().setId(transactionId).build())
+              .setTransaction(
+                  ignoreNextInlineBeginRequest.getAndSet(false)
+                      ? Transaction.getDefaultInstance()
+                      : Transaction.newBuilder().setId(transactionId).build())
               .build();
     }
     resultSet = resultSet.toBuilder().setMetadata(metadata).build();
@@ -1550,7 +1567,10 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
               .setMetadata(
                   ResultSetMetadata.newBuilder()
                       .setRowType(StructType.newBuilder().addFields(field).build())
-                      .setTransaction(Transaction.newBuilder().setId(transaction.getId()).build())
+                      .setTransaction(
+                          ignoreNextInlineBeginRequest.getAndSet(false)
+                              ? Transaction.getDefaultInstance()
+                              : Transaction.newBuilder().setId(transaction.getId()).build())
                       .build())
               .setStats(ResultSetStats.newBuilder().setRowCountExact(updateCount).build())
               .build());
@@ -1560,7 +1580,10 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
               .setMetadata(
                   ResultSetMetadata.newBuilder()
                       .setRowType(StructType.newBuilder().addFields(field).build())
-                      .setTransaction(Transaction.newBuilder().setId(transaction.getId()).build())
+                      .setTransaction(
+                          ignoreNextInlineBeginRequest.getAndSet(false)
+                              ? Transaction.getDefaultInstance()
+                              : Transaction.newBuilder().setId(transaction.getId()).build())
                       .build())
               .setStats(ResultSetStats.newBuilder().setRowCountLowerBound(updateCount).build())
               .build());
@@ -1702,23 +1725,24 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
     if (isReadWriteTransaction(transactionId)) {
       if (abortNextStatement.getAndSet(false) || abortProbability > random.nextDouble()) {
         rollbackTransaction(transactionId);
-        RetryInfo retryInfo =
-            RetryInfo.newBuilder()
-                .setRetryDelay(Duration.newBuilder().setNanos(100).build())
-                .build();
-        Metadata.Key<RetryInfo> key =
-            Metadata.Key.of(
-                retryInfo.getDescriptorForType().getFullName() + Metadata.BINARY_HEADER_SUFFIX,
-                ProtoLiteUtils.metadataMarshaller(retryInfo));
-        Metadata trailers = new Metadata();
-        trailers.put(key, retryInfo);
-        throw Status.ABORTED
-            .withDescription(
-                String.format(
-                    "Transaction with id %s has been aborted", transactionId.toStringUtf8()))
-            .asRuntimeException(trailers);
+        throw createAbortedException(transactionId);
       }
     }
+  }
+
+  public StatusRuntimeException createAbortedException(ByteString transactionId) {
+    RetryInfo retryInfo =
+        RetryInfo.newBuilder().setRetryDelay(Duration.newBuilder().setNanos(100).build()).build();
+    Metadata.Key<RetryInfo> key =
+        Metadata.Key.of(
+            retryInfo.getDescriptorForType().getFullName() + Metadata.BINARY_HEADER_SUFFIX,
+            ProtoLiteUtils.metadataMarshaller(retryInfo));
+    Metadata trailers = new Metadata();
+    trailers.put(key, retryInfo);
+    return Status.ABORTED
+        .withDescription(
+            String.format("Transaction with id %s has been aborted", transactionId.toStringUtf8()))
+        .asRuntimeException(trailers);
   }
 
   private void ensureMostRecentTransaction(Session session, ByteString transactionId) {
@@ -1942,7 +1966,7 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
     Stopwatch watch = Stopwatch.createStarted();
     while (!(this.requests.peekLast() != null
         && this.requests.peekLast().getClass().equals(type))) {
-      Thread.sleep(10L);
+      Thread.sleep(1L);
       if (watch.elapsed(TimeUnit.MILLISECONDS) > timeoutMillis) {
         throw new TimeoutException(
             "Timeout while waiting for last request to become " + type.getName());
@@ -1958,7 +1982,7 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
       throws InterruptedException, TimeoutException {
     Stopwatch watch = Stopwatch.createStarted();
     while (countRequestsOfType(type) == 0) {
-      Thread.sleep(10L);
+      Thread.sleep(1L);
       if (watch.elapsed(TimeUnit.MILLISECONDS) > timeoutMillis) {
         throw new TimeoutException(
             "Timeout while waiting for requests to contain " + type.getName());
@@ -1975,7 +1999,7 @@ public class MockSpannerServiceImpl extends SpannerImplBase implements MockGrpcS
       if (msg.iterator().hasNext()) {
         break;
       }
-      Thread.sleep(10L);
+      Thread.sleep(1L);
       if (watch.elapsed(TimeUnit.MILLISECONDS) > timeoutMillis) {
         throw new TimeoutException(
             "Timeout while waiting for requests to contain the wanted request");
