@@ -18,6 +18,7 @@ package com.google.cloud.spanner.spi.v1;
 
 import static com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException;
 
+import com.google.api.core.ApiFunction;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.InternalApi;
 import com.google.api.core.NanoClock;
@@ -153,7 +154,9 @@ import com.google.spanner.v1.Session;
 import com.google.spanner.v1.SpannerGrpc;
 import com.google.spanner.v1.Transaction;
 import io.grpc.CallCredentials;
+import io.grpc.CallOptions;
 import io.grpc.Context;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.MethodDescriptor;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
@@ -176,6 +179,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 import org.threeten.bp.Duration;
 
@@ -273,6 +277,7 @@ public class GapicSpannerRpc implements SpannerRpc {
   private static final double ADMINISTRATIVE_REQUESTS_RATE_LIMIT = 1.0D;
   private static final ConcurrentMap<String, RateLimiter> ADMINISTRATIVE_REQUESTS_RATE_LIMITERS =
       new ConcurrentHashMap<String, RateLimiter>();
+  private final AtomicInteger monitoredChannelCounter = new AtomicInteger(0);
 
   public static GapicSpannerRpc create(SpannerOptions options) {
     return new GapicSpannerRpc(options);
@@ -326,11 +331,23 @@ public class GapicSpannerRpc implements SpannerRpc {
                 .setDaemon(true)
                 .setNameFormat("Cloud-Spanner-TransportChannel-%d")
                 .build());
+
+    ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> channelConfigurator = new ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder>() {
+      @Override
+      public ManagedChannelBuilder apply(ManagedChannelBuilder managedChannelBuilder) {
+        if (options.getChannelConfigurator() != null) {
+          ManagedChannelBuilder builder = options.getChannelConfigurator().apply(managedChannelBuilder);
+          return new MonitoredChannelBuilder(builder, options.getNumChannels(), monitoredChannelCounter);
+        }
+        return new MonitoredChannelBuilder(managedChannelBuilder, options.getNumChannels(), monitoredChannelCounter);
+      }
+    };
+
     // First check if SpannerOptions provides a TransportChannerProvider. Create one
     // with information gathered from SpannerOptions if none is provided
     InstantiatingGrpcChannelProvider.Builder defaultChannelProviderBuilder =
         InstantiatingGrpcChannelProvider.newBuilder()
-            .setChannelConfigurator(options.getChannelConfigurator())
+            .setChannelConfigurator(channelConfigurator)
             .setEndpoint(options.getEndpoint())
             .setMaxInboundMessageSize(MAX_MESSAGE_SIZE)
             .setMaxInboundMetadataSize(MAX_METADATA_SIZE)
@@ -1683,6 +1700,12 @@ public class GapicSpannerRpc implements SpannerRpc {
     GrpcCallContext context = GrpcCallContext.createDefault();
     if (options != null) {
       context = context.withChannelAffinity(Option.CHANNEL_HINT.getLong(options).intValue());
+      if (context.getChannelAffinity() != null) {
+        CallOptions callOptions = context.getCallOptions()
+            .withOption(MonitoredChannelBuilder.AFFINITY_CALL_OPTION_KEY,
+                context.getChannelAffinity());
+        context = context.withCallOptions(callOptions);
+      }
     }
     context = context.withExtraHeaders(metadataProvider.newExtraHeaders(resource, projectName));
     if (callCredentialsProvider != null) {
