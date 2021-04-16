@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.google.cloud</groupId>
   <artifactId>google-cloud-spanner</artifactId>
-  <version>5.0.1-SNAPSHOT</version><!-- {x-version-update:google-cloud-spanner:current} -->
+  <version>5.0.1-METRICS</version><!-- {x-version-update:google-cloud-spanner:current} -->
   <packaging>jar</packaging>
   <name>Google Cloud Spanner</name>
   <url>https://github.com/googleapis/java-spanner</url>
@@ -185,6 +185,14 @@
     <dependency>
       <groupId>io.opencensus</groupId>
       <artifactId>opencensus-contrib-grpc-util</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opencensus</groupId>
+      <artifactId>opencensus-impl</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opencensus</groupId>
+      <artifactId>opencensus-exporter-stats-stackdriver</artifactId>
     </dependency>
     <dependency>
       <groupId>com.google.auth</groupId>
