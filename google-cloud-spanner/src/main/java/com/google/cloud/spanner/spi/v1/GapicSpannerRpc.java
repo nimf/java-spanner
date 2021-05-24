@@ -162,6 +162,7 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -277,7 +278,8 @@ public class GapicSpannerRpc implements SpannerRpc {
   private static final double ADMINISTRATIVE_REQUESTS_RATE_LIMIT = 1.0D;
   private static final ConcurrentMap<String, RateLimiter> ADMINISTRATIVE_REQUESTS_RATE_LIMITERS =
       new ConcurrentHashMap<String, RateLimiter>();
-  private final AtomicInteger monitoredChannelCounter = new AtomicInteger(0);
+  private final AtomicInteger monitoredChannelCounter = new AtomicInteger();
+  private final List<ChannelPoolMonitor> channelPoolMonitors = new ArrayList<>();
 
   public static GapicSpannerRpc create(SpannerOptions options) {
     return new GapicSpannerRpc(options);
@@ -335,11 +337,19 @@ public class GapicSpannerRpc implements SpannerRpc {
     ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> channelConfigurator = new ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder>() {
       @Override
       public ManagedChannelBuilder apply(ManagedChannelBuilder managedChannelBuilder) {
+        int channelIdx = monitoredChannelCounter.getAndIncrement();
+        int poolIdx = channelIdx / options.getNumChannels();
+        synchronized (this) {
+          while (channelPoolMonitors.size() < poolIdx + 1) {
+            channelPoolMonitors.add(new ChannelPoolMonitor(poolIdx, options.getNumChannels()));
+          }
+        }
+        ChannelPoolMonitor channelPoolMonitor = channelPoolMonitors.get(poolIdx);
         if (options.getChannelConfigurator() != null) {
           ManagedChannelBuilder builder = options.getChannelConfigurator().apply(managedChannelBuilder);
-          return new MonitoredChannelBuilder(builder, options.getNumChannels(), monitoredChannelCounter);
+          return new MonitoredChannelBuilder(builder, options.getNumChannels(), channelPoolMonitor);
         }
-        return new MonitoredChannelBuilder(managedChannelBuilder, options.getNumChannels(), monitoredChannelCounter);
+        return new MonitoredChannelBuilder(managedChannelBuilder, options.getNumChannels(), channelPoolMonitor);
       }
     };
 

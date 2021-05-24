@@ -39,15 +39,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Logger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
 
 class MonitoredChannelBuilder extends ManagedChannelBuilder {
   private final ManagedChannelBuilder delegate;
   private final int numChannels;
-  private final AtomicInteger monitoredChannelCounter;
-  private static final Logger logger = Logger.getLogger(MonitoredChannelBuilder.class.getName());
+  private final ChannelPoolMonitor poolMonitor;
   static final CallOptions.Key<Integer> AFFINITY_CALL_OPTION_KEY =
       CallOptions.Key.createWithDefault("affinity", null);
   private enum SessionOp{CREATE, USE, DELETE}
@@ -134,120 +132,73 @@ class MonitoredChannelBuilder extends ManagedChannelBuilder {
     return keys;
   }
 
-  MonitoredChannelBuilder(ManagedChannelBuilder builder, int numChannels, AtomicInteger monitoredChannelCounter) {
+  MonitoredChannelBuilder(ManagedChannelBuilder builder, int numChannels, ChannelPoolMonitor poolMonitor) {
     delegate = builder;
     this.numChannels = numChannels;
-    this.monitoredChannelCounter = monitoredChannelCounter;
+    this.poolMonitor = poolMonitor;
   }
 
   class ChannelStateMonitor implements Runnable {
     final private ManagedChannel channel;
-    final private String channelNum;
-    private ConnectivityState currentState;
-    private long notReadySince;
+    final private int channelIdx;
+    private ConnectivityState currentState = ConnectivityState.IDLE;
 
     private ChannelStateMonitor(ManagedChannel channel) {
       this.channel = channel;
-      this.channelNum = String.valueOf(monitoredChannelCounter.getAndIncrement());
-      notReadySince = System.currentTimeMillis();
+      this.channelIdx = poolMonitor.incChannels();
       run();
     }
 
     @Override
     public void run() {
-      ConnectivityState newState = channel.getState(true);
-      MetricsRecorder.recordChannelStateTransition(channelNum, currentState, newState);
-      if (newState == ConnectivityState.READY && currentState != ConnectivityState.READY) {
-        long readinessTime = System.currentTimeMillis() - notReadySince;
-        MetricsRecorder.recordChannelReadinessLatency(readinessTime, channelNum);
-        logger.fine(String.format("Replace this with your metrics library call. Report %s ms channel readiness time. Channel number %s", readinessTime, channelNum));
-      }
-      if (newState != ConnectivityState.READY && currentState == ConnectivityState.READY) {
-        notReadySince = System.currentTimeMillis();
-      }
-      if (currentState != null) {
-        logger.fine(String.format("Replace this with your metrics library call. Report decremented channels count. State %s, channel number %s", currentState, channelNum));
-      }
+      ConnectivityState newState = channel.getState(false);
+      poolMonitor.channelStateUpdate(channelIdx, currentState, newState);
       currentState = newState;
       if (newState != ConnectivityState.SHUTDOWN) {
-        logger.fine(String.format("Replace this with your metrics library call. Report incremented channels count. State %s, channel number %s", newState, channelNum));
         channel.notifyWhenStateChanged(newState, this);
       }
     }
   }
 
   class CallMonitor {
-    private final String channelIndex;
-    private final long startTime;
-    private long sendTime;
-    private long receiveTime;
-    @Nullable private String methodName;
-    @Nullable private SessionOp sessOp;
-    private List<String> sessions = new ArrayList<>();
-    private String session = null;
+    private final Integer channelIndex;
+    private final AtomicBoolean sent = new AtomicBoolean(false);
+    private final AtomicBoolean received = new AtomicBoolean(false);
+    private final String methodName;
 
     CallMonitor(@Nullable Integer channelIndex, MethodDescriptor method) {
-      startTime = System.currentTimeMillis();
-      this.channelIndex = String.valueOf(channelIndex);
+      this.channelIndex = channelIndex;
       this.methodName = method.getFullMethodName();
-      MetricsRecorder.reportRequestStart(this.channelIndex, methodName);
     }
 
-    public <RespT, ReqT> void onSend(MethodDescriptor<ReqT,RespT> method, ReqT message) {
-      if (sendTime > 0) {
+    public void onSend() {
+      if (sent.getAndSet(true)) {
         return;
       }
-      sendTime = System.currentTimeMillis();
-      // Fetch sessions
-      sessOp = SESSION_OPS.get(methodName);
-      if (sessOp == null) {
-        sessOp = SessionOp.USE;
-      }
-      final String sessionKey = SESSION_KEYS.get(methodName);
-      if (sessOp != SessionOp.CREATE && sessionKey != null) {
-        sessions.addAll(getKeysFromMessage((MessageOrBuilder) message, sessionKey));
-      }
-      // For a request within a session there must be only one session.
-      if (sessOp != SessionOp.CREATE && sessions.size() == 1) {
-        session = sessions.get(0);
-      }
-      MetricsRecorder.reportRequestSend(sendTime - startTime, channelIndex, methodName);
-      logger.fine(String.format("Replace this with your metrics library call. Report incremented requests count. Channel index %s, method %s, session %s", channelIndex, methodName, session));
-      logger.fine(String.format("Replace this with your metrics library call. Report %d ms send delay. Channel index %s, method %s, session %s", sendTime - startTime, channelIndex, methodName, session));
-      if (sessOp == SessionOp.DELETE) {
-        MetricsRecorder.recordSessionsCount(-1, channelIndex);
-        logger.fine(String.format(
-            "Replace this with your metrics library call. Report decremented session count. Channel index %s, session %s", channelIndex, session));
+      poolMonitor.incActiveStreams(channelIndex);
+      if (SESSION_OPS.get(methodName) == SessionOp.DELETE) {
+        poolMonitor.decSessions(channelIndex, 1);
       }
     }
 
-    public <ReqT, RespT> void onMessage(RespT message) {
-      if (receiveTime > 0) {
+    public <RespT> void onMessage(RespT message) {
+      if (received.getAndSet(true)) {
         return;
       }
-      receiveTime = System.currentTimeMillis();
-      if (sessOp == SessionOp.CREATE) {
+      if (SESSION_OPS.get(methodName) == SessionOp.CREATE) {
         // Fetch sessions
         final String sessionKey = SESSION_KEYS.get(methodName);
         if (sessionKey != null) {
           final List<String> sessions = getKeysFromMessage((MessageOrBuilder) message, sessionKey);
           if (sessions.size() > 0) {
-            MetricsRecorder.recordSessionsCount(sessions.size(), channelIndex);
-            // for (String session : sessions) {
-            //   logger.fine(String.format(
-            //       "Replace this with your metrics library call. Report incremented session count. Channel index %s, session %s",
-            //       channelIndex, session));
-            // }
+            poolMonitor.incSessions(channelIndex, sessions.size());
           }
         }
       }
     }
 
     void onClose(Status status) {
-      MetricsRecorder.reportRequestEnd(System.currentTimeMillis() - startTime, status.getCode().name(), channelIndex, methodName);
-      logger.fine(String.format(
-          "Replace this with your metrics library call. Report decremented requests count. Channel index %s, method %s, session %s, latency: %d",
-          channelIndex, methodName, session, System.currentTimeMillis() - startTime));
+      poolMonitor.decActiveStreams(channelIndex, status);
     }
   }
 
@@ -329,7 +280,7 @@ class MonitoredChannelBuilder extends ManagedChannelBuilder {
 
           @Override
           public void sendMessage(ReqT message) {
-            monitor.onSend(method, message);
+            monitor.onSend();
             super.sendMessage(message);
           }
         };

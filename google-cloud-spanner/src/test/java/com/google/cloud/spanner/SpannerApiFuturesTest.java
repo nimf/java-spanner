@@ -18,6 +18,7 @@ package com.google.cloud.spanner;
 
 import static com.google.cloud.spanner.SpannerApiFutures.get;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
 
 import com.google.api.core.ApiFuture;
@@ -49,7 +50,7 @@ public class SpannerApiFuturesTest {
 
   @Test
   public void testGetOrNull() {
-    assertThat(SpannerApiFutures.getOrNull(null)).isNull();
+    assertNull(SpannerApiFutures.getOrNull(null));
   }
 
   @Test
